@@ -4,6 +4,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.ConnectException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.atomic.AtomicInteger
@@ -42,21 +43,18 @@ object Rpc {
                 .put("method", method)
                 .put("params", arr)
                 .toString()
-            val conn: HttpURLConnection
+            var conn: HttpURLConnection? = null
             try {
-                conn = URL("$BASE/jsonrpc/0").openConnection() as HttpURLConnection
-            } catch (e: Exception) {
-                throw RpcException("Cannot reach the helper: ${e.message}", connection = true)
-            }
-            try {
-                conn.requestMethod = "POST"
-                conn.doOutput = true
-                conn.connectTimeout = 3000
-                conn.readTimeout = timeoutMs
-                conn.setRequestProperty("Content-Type", "application/json")
-                conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-                val code = conn.responseCode
-                val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                val c = URL("$BASE/jsonrpc/0").openConnection() as HttpURLConnection
+                conn = c
+                c.requestMethod = "POST"
+                c.doOutput = true
+                c.connectTimeout = 3000
+                c.readTimeout = timeoutMs
+                c.setRequestProperty("Content-Type", "application/json")
+                c.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                val code = c.responseCode
+                val stream = if (code in 200..299) c.inputStream else c.errorStream
                 val text = stream?.bufferedReader()?.readText().orEmpty()
                 if (code != 200) throw RpcException("Helper answered HTTP $code: ${text.take(160)}")
                 val json = JSONObject(text)
@@ -67,12 +65,12 @@ object Rpc {
                 json.opt("result")
             } catch (e: RpcException) {
                 throw e
-            } catch (e: java.net.ConnectException) {
+            } catch (e: ConnectException) {
                 throw RpcException("Cannot reach the helper: ${e.message}", connection = true)
             } catch (e: Exception) {
                 throw RpcException("${e.javaClass.simpleName}: ${e.message}")
             } finally {
-                conn.disconnect()
+                conn?.disconnect()
             }
         }
 }
