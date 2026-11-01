@@ -1,0 +1,75 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.10.2
+
+      - name: Bundle uiautomator2 helper APKs
+        run: |
+          mkdir -p /tmp/u2 app/src/main/assets
+          pip download uiautomator2==2.16.26 --no-deps --only-binary=:all: -d /tmp/u2
+          unzip -o -j /tmp/u2/*.whl 'uiautomator2/assets/app-uiautomator.apk' 'uiautomator2/assets/app-uiautomator-test.apk' -d app/src/main/assets
+          ls -l app/src/main/assets
+
+      - name: Install signing key
+        run: |
+          mkdir -p ~/.android
+          base64 -d signing/debug.keystore.b64 > ~/.android/debug.keystore
+
+      - name: Build
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle --no-daemon assembleDebug --stacktrace 2>&1 | tee build.log
+
+      - name: Publish to the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk InstaAddict.apk
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest InstaAddict.apk \
+            --title "InstaAddict (latest)" \
+            --notes "Built from commit ${GITHUB_SHA::7}. Download InstaAddict.apk and install it." \
+            --target "$GITHUB_SHA"
+
+      - name: Report failure as an issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "Build failed for commit ${GITHUB_SHA::7}"
+            echo
+            echo '```'
+            if [ -f build.log ]; then
+              grep -E '^e: |error:|What went wrong|FAILED|Execution failed' -A4 build.log | head -120
+              echo '--- tail ---'
+              tail -40 build.log
+            else
+              echo "No build log (a step before the build failed). See the run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            fi
+            echo '```'
+          } > issue.md
+          gh issue create --title "Build failed (${GITHUB_SHA::7})" --body-file issue.md
