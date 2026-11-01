@@ -1,6 +1,7 @@
 package app.instaaddict.runner.bot
 
 import android.content.Context
+import app.instaaddict.runner.core.AppLog
 import kotlinx.coroutines.delay
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.random.Random
@@ -68,7 +69,7 @@ class RunContext(
 
     fun step(text: String) {
         update { it.copy(step = text) }
-        app.instaaddict.runner.core.AppLog.i("Run", text)
+        AppLog.i("Run", text)
     }
 
     fun checkCancelled() {
