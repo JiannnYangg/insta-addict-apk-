@@ -93,8 +93,25 @@ object Preflight {
         return null
     }
 
+    /**
+     * Reads the phone's power state. Only returns false when the phone clearly says it is NOT awake
+     * (Asleep / Dozing). If the command fails, times out, or the output looks unfamiliar (some
+     * phone brands print it differently), we assume the screen is on instead of blocking the task.
+     */
     private suspend fun isAwake(): Boolean {
-        val out = AdbLink.shell("dumpsys power | grep mWakefulness=", 10_000L).out
-        return out.contains("Awake", ignoreCase = true) || out.isBlank()
+        val r = AdbLink.shell("dumpsys power", 15_000L)
+        if (!r.ok) {
+            AppLog.w("Preflight", "Screen check could not read the power state: ${r.out.take(120)}")
+            return true
+        }
+        val m = Regex("mWakefulness=(\\w+)").find(r.out)
+        if (m == null) {
+            AppLog.w("Preflight", "Screen check: power state not found in output, assuming on")
+            return true
+        }
+        val state = m.groupValues[1]
+        val awake = state.equals("Awake", ignoreCase = true)
+        if (!awake) AppLog.w("Preflight", "Screen state reported: $state")
+        return awake
     }
 }
