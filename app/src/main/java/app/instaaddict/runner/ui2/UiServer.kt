@@ -92,17 +92,45 @@ object UiServer {
         return Pair(lines.contains("package:$PKG_APP"), lines.contains("package:$PKG_TEST"))
     }
 
+    private suspend fun isInstalled(pkg: String): Boolean {
+        val out = AdbLink.shell("pm list packages $pkg", 15_000L).out
+        return out.lines().map { it.trim() }.contains("package:$pkg")
+    }
+
+    /**
+     * The phone sometimes closes the stream before it prints "Success" even though the install
+     * worked, so after every try we ask the phone directly and retry a few times if needed.
+     */
     private suspend fun install(ctx: Context): String? {
-        for (name in listOf("app-uiautomator.apk", "app-uiautomator-test.apk")) {
-            status.value = Status.Working("Installing helper ($name)...")
+        val files = listOf(
+            "app-uiautomator.apk" to PKG_APP,
+            "app-uiautomator-test.apk" to PKG_TEST,
+        )
+        for ((name, pkg) in files) {
+            if (isInstalled(pkg)) continue
             val bytes = try {
                 ctx.assets.open(name).use { it.readBytes() }
             } catch (e: Exception) {
                 return "A helper file ($name) is missing inside this app build. Please rebuild the app."
             }
-            val r = AdbLink.execWithInput("pm install -r -t -S ${bytes.size}", bytes, 180_000L)
-            AppLog.i("Helper", "install $name -> ${r.out.trim().take(300)}")
-            if (!r.out.contains("Success")) return explainInstallFailure(r.out)
+            var lastOut = ""
+            var done = false
+            for (attempt in 1..3) {
+                status.value = Status.Working("Installing helper ($name)... try $attempt")
+                val r = AdbLink.execWithInput("pm install -r -t -S ${bytes.size}", bytes, 180_000L)
+                lastOut = r.out
+                AppLog.i("Helper", "install $name (try $attempt) -> ${r.out.trim().take(300)}")
+                if (r.out.contains("Success") || isInstalled(pkg)) {
+                    done = true
+                    break
+                }
+                val o = r.out
+                if (o.contains("USER_RESTRICTED", true) || o.contains("INSUFFICIENT_STORAGE", true)) break
+                // connection may have dropped: bring it back, then try again
+                delay(1500)
+                AdbLink.ensureConnected(false)
+            }
+            if (!done) return explainInstallFailure(lastOut)
         }
         return null
     }
