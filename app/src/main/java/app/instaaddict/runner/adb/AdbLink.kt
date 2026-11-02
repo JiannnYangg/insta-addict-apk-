@@ -15,6 +15,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.security.PrivateKey
 import java.security.cert.Certificate
@@ -239,17 +240,34 @@ object AdbLink {
                 timedOut.set(true)
                 runCatching { stream.close() }
             }
+            // Read what the phone prints bit by bit. When the phone finishes a command it closes the
+            // stream, and the library reports that as a "Stream closed" error. That is the NORMAL
+            // end of a command, so we keep everything read so far instead of throwing it away.
+            val collected = ByteArrayOutputStream()
             try {
                 if (stdin != null) {
                     val os = stream.openOutputStream()
                     os.write(stdin)
                     os.flush()
                 }
-                val text = stream.openInputStream().bufferedReader().readText()
-                ShellResult(!timedOut.get(), text)
+                val input = stream.openInputStream()
+                val buf = ByteArray(4096)
+                try {
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        collected.write(buf, 0, n)
+                    }
+                } catch (e: IOException) {
+                    val closedNormally = !timedOut.get() &&
+                        (e.message ?: "").contains("closed", ignoreCase = true)
+                    if (!closedNormally) throw e
+                }
+                ShellResult(!timedOut.get(), collected.toString("UTF-8"))
             } catch (e: Exception) {
                 val why = if (timedOut.get()) "timed out" else (e.message ?: e.javaClass.simpleName)
-                ShellResult(false, why)
+                val partial = collected.toString("UTF-8")
+                ShellResult(false, if (partial.isNotEmpty()) partial else why)
             } finally {
                 watchdog.cancel()
                 runCatching { stream.close() }
