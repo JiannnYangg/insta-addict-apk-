@@ -25,7 +25,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * The phone talks to its own debug service (adbd) from inside this app. Two ways to get the
  * permission, both without root:
  *   - "wireless": pair once with Wireless debugging (Android 11+, needs Wi-Fi). After pairing the
- *     app finds the changing port by itself.
+ *     app finds the changing port by itself (or you type it once).
  *   - "cable": run `adb tcpip 5555` from a laptop once; the app then connects to 127.0.0.1:5555
  *     until the phone restarts.
  */
@@ -61,6 +61,14 @@ object AdbLink {
         }
     }
 
+    private fun linkPrefs() = ctx.getSharedPreferences("link", Context.MODE_PRIVATE)
+
+    private var wirelessPort: Int
+        get() = linkPrefs().getInt("wireless_port", 0)
+        set(v) {
+            linkPrefs().edit().putInt("wireless_port", v).apply()
+        }
+
     // ---- connecting ---------------------------------------------------------------------------
 
     /** Returns quickly if the link is already alive; otherwise tries to bring it back. */
@@ -77,6 +85,34 @@ object AdbLink {
                 }
             } catch (e: Exception) {
                 AppLog.e("Link", "Unexpected connect error", e)
+                LinkResult.Failed(Issue.OTHER, e.message ?: e.javaClass.simpleName)
+            }
+        }
+    }
+
+    /**
+     * Wireless debugging shows its connect port on its main screen ("IP address & Port").
+     * Typing that number is the fallback when automatic search cannot find it.
+     */
+    suspend fun connectToPort(port: Int): LinkResult = connectLock.withLock {
+        withContext(Dispatchers.IO) {
+            try {
+                runCatching { manager.disconnect() }
+                manager.setTimeout(15L, TimeUnit.SECONDS)
+                val ok = manager.connect("127.0.0.1", port)
+                if (ok || manager.isConnected) {
+                    wirelessPort = port
+                    Prefs.mode = "wireless"
+                    _connected.value = true
+                    AppLog.i("Link", "Connected on port $port")
+                    LinkResult.Connected
+                } else {
+                    LinkResult.Failed(Issue.DENIED, "The phone did not accept the connection")
+                }
+            } catch (e: AdbPairingRequiredException) {
+                LinkResult.Failed(Issue.NOT_PAIRED, e.message ?: "pairing required")
+            } catch (e: Exception) {
+                AppLog.w("Link", "Connect on port $port failed: ${e.javaClass.simpleName}: ${e.message}")
                 LinkResult.Failed(Issue.OTHER, e.message ?: e.javaClass.simpleName)
             }
         }
@@ -123,6 +159,17 @@ object AdbLink {
     }
 
     private fun tryWireless(): LinkResult.Failed? {
+        // 1. the port that worked last time (it only changes when Wireless debugging is toggled)
+        val saved = wirelessPort
+        if (saved > 0) {
+            try {
+                manager.setTimeout(6L, TimeUnit.SECONDS)
+                if (manager.connect("127.0.0.1", saved) || manager.isConnected) return null
+            } catch (e: Exception) {
+                AppLog.d("Link", "Saved port $saved did not work: ${e.message}")
+            }
+        }
+        // 2. search for it on the network
         return try {
             manager.setTimeout(10L, TimeUnit.SECONDS)
             val searchMs = if (Prefs.mode == "none") 4000L else 7000L
