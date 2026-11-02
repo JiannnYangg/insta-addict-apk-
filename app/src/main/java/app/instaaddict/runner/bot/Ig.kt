@@ -68,6 +68,26 @@ class Ig(private val ctx: RunContext) {
         ctx.fail("I could not read the screen ($lastError). Open the Logs tab, then try again.")
     }
 
+    /**
+     * Which app is in front. The screen dump lists every window (status bar, floating bubbles,
+     * keyboard...), so the FIRST element is not always the app. We take the app that owns most of
+     * the elements on screen instead.
+     */
+    private fun frontPkg(nodes: List<UiNode>): String =
+        nodes.filter { it.pkg.isNotEmpty() }
+            .groupingBy { it.pkg }
+            .eachCount()
+            .maxByOrNull { it.value }
+            ?.key ?: ""
+
+    private fun packagesSeen(nodes: List<UiNode>): String =
+        nodes.filter { it.pkg.isNotEmpty() }
+            .groupingBy { it.pkg }
+            .eachCount()
+            .entries.sortedByDescending { it.value }
+            .take(5)
+            .joinToString { "${it.key}=${it.value}" }
+
     // ---- opening Instagram --------------------------------------------------------------------
 
     private suspend fun launch() {
@@ -90,8 +110,9 @@ class Ig(private val ctx: RunContext) {
         val end = System.currentTimeMillis() + timeoutMs
         while (true) {
             val nodes = dump()
-            if (nodes.firstOrNull()?.pkg == PKG) return nodes
+            if (frontPkg(nodes) == PKG) return nodes
             if (System.currentTimeMillis() > end) {
+                AppLog.w("Ig", "Instagram not in front. First element: ${nodes.firstOrNull()?.pkg ?: "none"}. On screen: ${packagesSeen(nodes)}")
                 ctx.fail("Instagram did not come to the front. Unlock the phone and make sure Instagram opens normally.")
             }
             ctx.pause(1200, 1800)
@@ -152,7 +173,7 @@ class Ig(private val ctx: RunContext) {
 
     /** If Instagram is not in front (crash, another app, notification shade), bring it back. */
     suspend fun recoverIfNeeded(nodes: List<UiNode>): Boolean {
-        val pkg = nodes.firstOrNull()?.pkg ?: ""
+        val pkg = frontPkg(nodes)
         if (pkg == PKG) return false
         if (relaunches >= 3) {
             ctx.fail("Instagram keeps closing, or another app keeps taking over. I stopped.")
