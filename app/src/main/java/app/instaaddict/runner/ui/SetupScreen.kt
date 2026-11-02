@@ -228,6 +228,9 @@ fun ConnectionOptions(onConnected: () -> Unit = {}) {
     var cableMsg by remember { mutableStateOf<String?>(null) }
     var cableBusy by remember { mutableStateOf(false) }
     var code by remember { mutableStateOf("") }
+    var portText by remember { mutableStateOf("") }
+    var portMsg by remember { mutableStateOf<String?>(null) }
+    var portBusy by remember { mutableStateOf(false) }
     val notifLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     Text("Pick ONE of these:", fontWeight = FontWeight.Bold, fontSize = 16.sp)
@@ -252,7 +255,7 @@ fun ConnectionOptions(onConnected: () -> Unit = {}) {
             is PairingCenter.State.Searching -> "Looking for the pairing window… open 'Pair device with pairing code' now."
             is PairingCenter.State.Found -> "Found it! Pull down the notification bar and tap 'Enter code' (or type the code below)."
             is PairingCenter.State.Pairing -> "Pairing…"
-            is PairingCenter.State.Paired -> "Paired! Connecting…"
+            is PairingCenter.State.Paired -> "Paired! Connecting… If it does not connect in a few seconds, use the port box below."
             is PairingCenter.State.Failed -> s.message
         }
         if (msg != null) Text(msg, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
@@ -268,6 +271,39 @@ fun ConnectionOptions(onConnected: () -> Unit = {}) {
                 PairingCenter.submit(ctx.applicationContext, code) { onConnected() }
             })
         }
+
+        Text("Paired, but it will not connect?", fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
+        Text(
+            "Go to Developer options > Wireless debugging (keep it ON). On its main screen, under 'IP address & Port', " +
+                "you see something like 192.168.1.5:41234. Type only the number after the colon here.",
+            fontSize = 13.sp,
+        )
+        OutlinedTextField(
+            value = portText,
+            onValueChange = { portText = it.filter { c -> c.isDigit() }.take(5) },
+            label = { Text("Port (the number after the colon)") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        SoftButton(if (portBusy) "Connecting…" else "Connect with this port", enabled = !portBusy && portText.length >= 4, onClick = {
+            val p = portText.toIntOrNull()
+            if (p != null) {
+                portBusy = true
+                portMsg = "Connecting… if the phone asks 'Allow wireless debugging?', tap Allow."
+                scope.launch {
+                    when (val r = AdbLink.connectToPort(p)) {
+                        is AdbLink.LinkResult.Connected -> {
+                            portMsg = "Connected!"
+                            onConnected()
+                        }
+                        is AdbLink.LinkResult.Failed ->
+                            portMsg = "Could not connect (${r.detail}). Check Wireless debugging is ON, you are on Wi-Fi, and the port is the current one."
+                    }
+                    portBusy = false
+                }
+            }
+        })
+        portMsg?.let { Text(it, fontSize = 14.sp, fontWeight = FontWeight.SemiBold) }
     }
 
     // ---- Option 2 ----
